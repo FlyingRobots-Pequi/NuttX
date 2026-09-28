@@ -639,6 +639,30 @@ found:
 
   dev->d_len -= (len + iplen);
 
+  /* RFC 793, SYN-SENT: a segment with ACK but without SYN (and without RST,
+   * handled above) cannot acknowledge our SYN, so it belongs to an older
+   * incarnation of this connection that the peer still holds.  Answer it
+   * with <SEQ=SEG.ACK><CTL=RST> and stay in SYN_SENT; the next SYN
+   * retransmission then finds the port free.
+   *
+   * Without this, the sequence check below swallows the segment (it is only
+   * meaningful once rcvseq is known) and the peer's challenge ACK never gets
+   * the reset it asks for.  Seen on the bench (2026-09-26): after a reboot
+   * the FCU reconnects from the same local port as before the reboot
+   * (ephemeral ports restart from the same value on every boot), the router
+   * still holds that 4-tuple ESTABLISHED, and the connect() retransmitted
+   * its SYN into the challenge ACKs for 46 s until it gave up -- the zenoh
+   * session only came back on a later attempt, 1 to 3.5 minutes after boot.
+   */
+
+  if ((conn->tcpstateflags & TCP_STATE_MASK) == TCP_SYN_SENT &&
+      (tcp->flags & (TCP_SYN | TCP_RST | TCP_ACK)) == TCP_ACK)
+    {
+      nwarn("WARNING: ACK in SYN_SENT from an old connection, sending RST\n");
+      tcp_reset(dev);
+      return;
+    }
+
   /* Check if the sequence number of the incoming packet is what we are
    * expecting next.  If not, we send out an ACK with the correct numbers
    * in, unless we are in the SYN_RCVD state and receive a SYN, in which

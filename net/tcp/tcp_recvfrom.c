@@ -572,6 +572,23 @@ static void tcp_recvfrom_initialize(FAR struct tcp_conn_s *conn,
 
 static ssize_t tcp_recvfrom_result(int result, struct tcp_recvfrom_s *pstate)
 {
+  /* Data already copied into the user buffer MUST be returned, whatever
+   * net_timedwait() says.  tcp_recvhandler() advances conn->rcvseq for
+   * every byte it copies, so those bytes are ACKed and the peer will never
+   * send them again.  The race: the receive timeout (SO_RCVTIMEO) expires,
+   * but before this thread re-takes the network lock the driver delivers a
+   * segment, and the still-registered callback copies it here and ACKs it.
+   * net_timedwait() then returns -ETIMEDOUT and, without this check, the
+   * bytes were silently dropped -- a hole in the TCP stream that the wire
+   * never sees.  A stream protocol on top (zenoh) desynchronizes for good.
+   * The lower the priority of the receiving thread, the wider the window.
+   */
+
+  if (pstate->ir_recvlen > 0)
+    {
+      return pstate->ir_recvlen;
+    }
+
   /* Check for a error/timeout detected by the event handler.  Errors are
    * signaled by negative errno values for the rcv length
    */
